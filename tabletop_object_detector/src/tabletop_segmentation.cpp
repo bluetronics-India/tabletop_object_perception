@@ -41,6 +41,7 @@
 #include <sensor_msgs/PointCloud.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud_conversion.h>
+#include <sensor_msgs/SnapshotCloud.h>
 #include <visualization_msgs/Marker.h>
 
 #include <tf/transform_listener.h>
@@ -198,18 +199,22 @@ bool TabletopSegmentor::serviceCallback(TabletopSegmentation::Request &request,
                                         TabletopSegmentation::Response &response)
 {
   ros::Time start_time = ros::Time::now();
-  std::string topic = nh_.resolveName("cloud_in");
-  ROS_INFO("Tabletop detection service called; waiting for a point_cloud2 on topic %s", topic.c_str());
+  // std::string topic = nh_.resolveName("cloud_in");
+  std::string service = nh_.resolveName("/ensenso_nx/ensenso_server");
+  ROS_INFO("Tabletop detection service called; waiting for cloud service with name %s", service.c_str());
 
-  sensor_msgs::PointCloud2::ConstPtr recent_cloud = 
-    ros::topic::waitForMessage<sensor_msgs::PointCloud2>(topic, nh_, ros::Duration(3.0));
-              
-  if (!recent_cloud)
+  sensor_msgs::SnapshotCloud cloud_srv;
+  cloud_srv.request.dense_cloud = false;
+  cloud_srv.request.exposure = 30;
+
+  ros::service::waitForService(service, ros::Duration(3.0));
+  if( !ros::service::call(service, cloud_srv) )
   {
     ROS_ERROR("Tabletop object detector: no point_cloud2 has been received");
     response.result = response.NO_CLOUD_RECEIVED;
     return true;
   }
+  sensor_msgs::PointCloud2 cloud  = cloud_srv.response.cloud;
 
   pcl::PointCloud<Point>::Ptr table_hull (new pcl::PointCloud<Point>);
   ROS_INFO_STREAM("Point cloud received after " << ros::Time::now() - start_time << " seconds; processing");
@@ -217,7 +222,7 @@ bool TabletopSegmentor::serviceCallback(TabletopSegmentation::Request &request,
   {
     //convert cloud to processing_frame_ (usually base_link)
     sensor_msgs::PointCloud old_cloud;  
-    sensor_msgs::convertPointCloud2ToPointCloud (*recent_cloud, old_cloud);
+    sensor_msgs::convertPointCloud2ToPointCloud (cloud, old_cloud);
     int current_try=0, max_tries = 3;
     while (1)
     {
@@ -251,15 +256,15 @@ bool TabletopSegmentor::serviceCallback(TabletopSegmentation::Request &request,
   }
   else
   {
-    processCloud(*recent_cloud, response, request.table);
-    clearOldMarkers(recent_cloud->header.frame_id);
+    processCloud(cloud, response, request.table);
+    clearOldMarkers(cloud.header.frame_id);
   }
 
   //add the timestamp from the original cloud
-  response.table.pose.header.stamp = recent_cloud->header.stamp;
+  response.table.pose.header.stamp = cloud.header.stamp;
   for(size_t i; i<response.clusters.size(); i++)
   {
-    response.clusters[i].header.stamp = recent_cloud->header.stamp;
+    response.clusters[i].header.stamp = cloud.header.stamp;
   }
 
   ROS_INFO_STREAM("In total, segmentation took " << ros::Time::now() - start_time << " seconds");
